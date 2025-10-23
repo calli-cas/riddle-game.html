@@ -1,0 +1,514 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Riddle Race — Plain HTML/JS</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    body { font-family: Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:#f7fafc; color:#111827; padding:20px; }
+    .container{ max-width:900px; margin:0 auto; background:white; border-radius:10px; box-shadow:0 8px 24px rgba(15,23,42,0.06); padding:20px; }
+    h1,h2 { margin:0 0 12px 0; }
+    .row { display:flex; gap:12px; align-items:center; margin-bottom:12px; flex-wrap:wrap; }
+    input,select,textarea,button { padding:8px 10px; border-radius:8px; border:1px solid #e6e9ef; font-size:15px; }
+    button { cursor:pointer; background:#0369a1; color:white; border: none; }
+    button.secondary { background:#64748b; }
+    button.ghost { background:transparent; color:#374151; border:1px solid #e6e9ef; }
+    .muted { color:#6b7280; font-size:13px; }
+    .card { background:#ffffff; border:1px solid #eef2f7; padding:14px; border-radius:8px; }
+    .center { text-align:center; }
+    .small { font-size:13px; color:#374151; }
+    .ok { color: #16a34a; font-weight:600; }
+    .bad { color: #dc2626; font-weight:600; }
+    .leaderboard { width:100%; border-collapse:collapse; margin-top:8px; }
+    .leaderboard th, .leaderboard td { padding:8px 10px; border-bottom:1px solid #eef2f7; text-align:left; }
+    pre { background:#f8fafc; padding:10px; border-radius:6px; overflow:auto; }
+    .hint { background:#f1f5f9; padding:8px; border-radius:6px; margin:8px 0; color:#334155; }
+    .svg-img { width:220px; height:120px; }
+    footer { margin-top:18px; color:#6b7280; font-size:13px; }
+  </style>
+</head>
+<body>
+  <div class="container" id="app">
+    <h1>Riddle Race — Play Once</h1>
+
+    <!-- Top actions -->
+    <div style="display:flex;gap:8px;align-items:center;margin-bottom:16px;">
+      <button id="btnInstructions">Show Instructions</button>
+      <button id="btnStart" class="secondary">Start Game (Player)</button>
+      <button id="btnAdmin" class="ghost">Admin Dashboard</button>
+      <button id="btnClearStorage" class="ghost" title="Clears local saved data">Clear Local Data</button>
+    </div>
+
+    <!-- Main area -->
+    <div id="mainArea">
+      <!-- Instructions (shown initially) -->
+      <div id="instructions" class="card">
+        <h2>General Instructions</h2>
+        <p class="muted">Read this before starting. Every player will take the game once. They will input Name and Castle number, then proceed through 10 items (riddles, encoded phrases, picture guess). No timer — answer at your pace.</p>
+
+        <div class="hint">
+          <strong>How a single item works</strong>
+          <ul>
+            <li>Each item shows instructions and a prompt.</li>
+            <li><strong>Submit</strong> — locks their answer for that item (they see whether it's correct/wrong and their updated score).</li>
+            <li><strong>Next</strong> — moves to the next item. They cannot go back to change previous answers.</li>
+            <li>Once the 10th item is done, the player is finished and cannot retake.</li>
+          </ul>
+        </div>
+
+        <div>
+          <h3>Scoring rules</h3>
+          <table>
+            <tr><td class="small">1st correct for an item</td><td class="small"><strong>50,000</strong> base</td></tr>
+            <tr><td class="small">2nd correct for an item</td><td class="small"><strong>45,000</strong> base</td></tr>
+            <tr><td class="small">3rd correct for an item</td><td class="small"><strong>40,000</strong> base</td></tr>
+            <tr><td class="small">4th+ correct for an item</td><td class="small"><strong>30,000</strong> base</td></tr>
+            <tr><td class="small">Wrong answer</td><td class="small"><strong>15,000</strong> (streak resets)</td></tr>
+          </table>
+
+          <p class="small" style="margin-top:8px;"><strong>Streak multipliers (consecutive correct answers):</strong>
+          <ul>
+            <li>1st consecutive correct in a streak → ×1.5</li>
+            <li>2nd consecutive → ×2</li>
+            <li>3rd consecutive → ×3</li>
+            <li>4th consecutive → ×4</li>
+            <li>5th and later → ×5 (cap)</li>
+          </ul>
+          After a wrong answer the streak resets and the next correct will be treated as first in streak (×1.5).</p>
+        </div>
+
+        <p class="muted">Admin Dashboard shows all players, castles, scores, streaks and per-item submissions. The game runs automatically; admin is observer only.</p>
+      </div>
+    </div>
+
+    <footer>
+      Tip: For multi-player sessions on separate devices you'd need a server — this local version stores results in your browser's localStorage so admin can view them here.
+    </footer>
+  </div>
+
+<script>
+/* ========== Data model in localStorage ===========
+We persist these keys:
+- riddle_game_players : array of player objects { id, name, castle, score, streak, finished, startedAt, finishedAt }
+- riddle_game_submissions : object mapping itemIndex (0-based) -> array of { playerId, ts, answer, correct }
+*/ 
+
+// ----- Config -----
+const ITEMS = [
+  { id:1, type:'riddle', instruction:'Solve the riddle (one-word ok).', prompt:"I have cities but no houses, forests but no trees, and water but no fish. What am I?", answer:"map" },
+  { id:2, type:'atbash', instruction:'Decode the Atbash cipher (A↔Z).', prompt:"gsv ozab wlt", answer:atbash("gsv ozab wlt") }, // -> "the lazy dog"
+  { id:3, type:'riddle', instruction:'Short riddle: one-word answer.', prompt:"What has keys but can't open locks?", answer:"piano" },
+  { id:4, type:'picture', instruction:'Look and name the fruit.', prompt:svgBanana(), answer:"banana" },
+  { id:5, type:'decode', instruction:'This was Caesar-shifted by +2. Decode it.', prompt:"vjg rjkp ku vjg tgnn", answer:caesarDecode("vjg rjkp ku vjg tgnn",2) }, // demo
+  { id:6, type:'atbash', instruction:'Atbash single word.', prompt:"szoo", answer:atbash("szoo") },
+  { id:7, type:'riddle', instruction:'Riddle: one-word answer.', prompt:"I speak without a mouth and hear without ears. What am I?", answer:"echo" },
+  { id:8, type:'picture', instruction:'Name the animal shown.', prompt:svgCat(), answer:"cat" },
+  { id:9, type:'atbash', instruction:'Atbash decode the word.', prompt:"gsv", answer:atbash("gsv") },
+  { id:10, type:'riddle', instruction:'Final riddle.', prompt:"What can travel around the world while staying in a corner?", answer:"stamp" }
+];
+
+const BASE_BY_ORDER = [50000,45000,40000];
+const DEFAULT_BASE = 30000;
+const WRONG_SCORE = 15000;
+
+// Streak multipliers (1st->1.5, 2nd->2, 3rd->3, 4th->4, 5th+->5)
+function streakMultiplier(streak) {
+  if (!streak || streak <= 0) return 1.5; // note: first correct in a streak multiplies by 1.5 (per your rule)
+  if (streak === 1) return 2;
+  if (streak === 2) return 3;
+  if (streak === 3) return 4;
+  return 5;
+}
+
+// ----- Utils -----
+function storageGet(key){ try{ return JSON.parse(localStorage.getItem(key)); }catch(e){ return null; } }
+function storageSet(key, val){ localStorage.setItem(key, JSON.stringify(val)); }
+function now(){ return Date.now(); }
+function uid(name, castle){ return `${name.trim()}|${castle.trim()}`; }
+function normalize(s){ return String(s||'').toLowerCase().replace(/[.,!?\\-\\s]+/g,' ').trim(); }
+
+// Atbash decode helper
+function atbashRaw(s){
+  const a='abcdefghijklmnopqrstuvwxyz';
+  return s.toLowerCase().split('').map(ch=>{
+    const i=a.indexOf(ch);
+    return i===-1?ch:a[25-i];
+  }).join('');
+}
+function atbash(s){ return atbashRaw(s).replace(/\s+/g,' ').trim(); }
+
+// Caesar decode helper (shift is positive for encoding; we decode by subtracting)
+function caesarDecode(s, shift=2){
+  const a='abcdefghijklmnopqrstuvwxyz';
+  return s.toLowerCase().split('').map(ch=>{
+    const i=a.indexOf(ch);
+    if(i===-1) return ch;
+    let ni=(i - shift + 26) % 26;
+    return a[ni];
+  }).join('').replace(/\s+/g,' ').trim();
+}
+
+// Simple inline SVGs for picture items
+function svgBanana(){
+  return `<svg class="svg-img" viewBox="0 0 200 100" xmlns="http://www.w3.org/2000/svg"><path d="M10 50 C 30 10, 120 10, 150 50 C 120 70, 40 80, 10 50" stroke="#222" fill="#facc15"/></svg>`;
+}
+function svgCat(){
+  return `<svg class="svg-img" viewBox="0 0 200 120" xmlns="http://www.w3.org/2000/svg"><circle cx="90" cy="60" r="40" stroke="#222" fill="#9ca3af"/><circle cx="75" cy="52" r="5" fill="#111"/><circle cx="105" cy="52" r="5" fill="#111"/><path d="M60 40 L48 24 L72 40 Z" stroke="#222" fill="#9ca3af"/><path d="M120 40 L132 24 L108 40 Z" stroke="#222" fill="#9ca3af"/></svg>`;
+}
+
+// ----- Initialize persisted storage if missing -----
+if(!storageGet('riddle_game_players')) storageSet('riddle_game_players', []);
+if(!storageGet('riddle_game_submissions')) storageSet('riddle_game_submissions', {});
+
+// ----- DOM references -----
+const app = document.getElementById('app');
+const btnInstructions = document.getElementById('btnInstructions');
+const btnStart = document.getElementById('btnStart');
+const btnAdmin = document.getElementById('btnAdmin');
+const btnClearStorage = document.getElementById('btnClearStorage');
+const mainArea = document.getElementById('mainArea');
+
+btnInstructions.addEventListener('click', ()=>{ showInstructions(); });
+btnStart.addEventListener('click', ()=>{ showPlayerStart(); });
+btnAdmin.addEventListener('click', ()=>{ showAdminDashboard(); });
+btnClearStorage.addEventListener('click', ()=>{ if(confirm('Clear LOCAL game data? This removes all saved players/submissions in this browser.')){ localStorage.removeItem('riddle_game_players'); localStorage.removeItem('riddle_game_submissions'); alert('Cleared.'); location.reload(); }});
+
+// ----- Render functions -----
+function showInstructions(){
+  mainArea.innerHTML = '';
+  const div = document.createElement('div');
+  div.className='card';
+  div.innerHTML = document.getElementById('instructions').innerHTML;
+  mainArea.appendChild(div);
+}
+
+function showPlayerStart(){
+  mainArea.innerHTML = '';
+  const card = document.createElement('div');
+  card.className='card';
+  card.innerHTML = `
+    <h2>Player Start</h2>
+    <div class="row"><label>Name</label><input id="playerName" placeholder="e.g., Alice" /></div>
+    <div class="row"><label>Castle #</label><input id="playerCastle" placeholder="#Castle1" /></div>
+    <div class="row"><button id="btnBegin">Begin Game</button><button id="btnBack" class="ghost">Back</button></div>
+    <p class="muted">Each player may take the game once in this browser. Finished players can't replay unless local storage is cleared.</p>
+  `;
+  mainArea.appendChild(card);
+  document.getElementById('btnBack').addEventListener('click', ()=> showInstructions());
+  document.getElementById('btnBegin').addEventListener('click', ()=> {
+    const name = document.getElementById('playerName').value.trim();
+    const castle = document.getElementById('playerCastle').value.trim();
+    if(!name || !castle){ alert('Enter both name and castle.'); return; }
+    const id = uid(name, castle);
+    const players = storageGet('riddle_game_players') || [];
+    const existing = players.find(p=>p.id===id);
+    if(existing && existing.finished){
+      alert('This player has already finished the game (one-play rule). If you need to let them replay, clear local data.');
+      return;
+    }
+    if(!existing){
+      players.push({ id, name, castle, score:0, streak:0, startedAt: now(), finished: false, finishedAt: null });
+      storageSet('riddle_game_players', players);
+    } else {
+      // allow resuming if they started but not finished
+    }
+    // go to gameplay for this player
+    showGameplayForPlayer(id);
+  });
+}
+
+function showGameplayForPlayer(playerId){
+  const players = storageGet('riddle_game_players') || [];
+  const me = players.find(p=>p.id===playerId);
+  if(!me){ alert('Player not found.'); return; }
+  if(me.finished){ alert('Player already finished.'); return; }
+
+  // track current item index per player in sessionStorage so they can resume (if needed)
+  const sessionKey = 'riddle_game_session_' + playerId;
+  let session = JSON.parse(sessionStorage.getItem(sessionKey) || '{}');
+  if(session.currentIndex === undefined) session.currentIndex = 0;
+  if(session.answers === undefined) session.answers = []; // store local answer copies though final authoritative submissions stored in localStorage submissions
+  sessionStorage.setItem(sessionKey, JSON.stringify(session));
+
+  renderItemForPlayer(playerId, session.currentIndex);
+}
+
+function renderItemForPlayer(playerId, itemIndex){
+  const players = storageGet('riddle_game_players') || [];
+  const me = players.find(p=>p.id===playerId);
+  if(!me) { alert('Player not found'); return; }
+
+  // if finished, show finished screen
+  if(me.finished){
+    showPlayerFinished(me);
+    return;
+  }
+
+  const item = ITEMS[itemIndex];
+  mainArea.innerHTML = '';
+  const card = document.createElement('div');
+  card.className='card';
+  card.innerHTML = `
+    <h2>Item ${item.id} / ${ITEMS.length}</h2>
+    <p class="small"><strong>Player:</strong> ${escapeHtml(me.name)} — <strong>Castle:</strong> ${escapeHtml(me.castle)}</p>
+    <div style="margin-top:8px;">
+      <div class="small"><em>Instruction:</em> ${escapeHtml(item.instruction)}</div>
+      <div style="margin-top:8px;" id="promptArea"></div>
+    </div>
+    <div style="margin-top:12px;">
+      <input id="answerInput" placeholder="Type your answer here" style="width:70%;" />
+      <button id="btnSubmit">Submit</button>
+      <button id="btnNext" class="ghost" disabled>Next</button>
+    </div>
+    <div id="feedback" style="margin-top:12px;"></div>
+    <div style="margin-top:12px;">
+      <strong>Your total score:</strong> <span id="myScore">${me.score}</span> &nbsp; <span class="muted"> (streak: <span id="myStreak">${me.streak}</span>)</span>
+    </div>
+  `;
+
+  mainArea.appendChild(card);
+
+  // fill prompt
+  const promptArea = document.getElementById('promptArea');
+  if(item.type === 'picture'){
+    promptArea.innerHTML = item.prompt;
+  } else {
+    promptArea.innerHTML = `<pre>${escapeHtml(item.prompt)}</pre>`;
+  }
+
+  // wire buttons
+  const btnSubmit = document.getElementById('btnSubmit');
+  const btnNext = document.getElementById('btnNext');
+  const answerInput = document.getElementById('answerInput');
+  const feedback = document.getElementById('feedback');
+
+  btnSubmit.addEventListener('click', ()=> {
+    const raw = answerInput.value;
+    if(raw === undefined || raw === null){ alert('Type an answer'); return; }
+    const normalized = normalizeAnswer(raw);
+    // compute correctness
+    let expected = String(item.answer || '');
+    expected = normalizeAnswer(expected);
+    const correct = (normalized === expected);
+    // record submission in storage (per item)
+    recordSubmission(itemIndex, { playerId: me.id, ts: now(), answer: raw, normalized, correct });
+    // compute base based on how many correct submissions exist for this item so far (including this one if correct)
+    const submissions = storageGet('riddle_game_submissions') || {};
+    const arr = submissions[itemIndex] || [];
+    // find number of correct submissions for this item ordered by ts ascending
+    const correctsSorted = arr.filter(s=>s.correct).sort((a,b)=>a.ts - b.ts);
+    // find this player's position among corrects (only if correct)
+    let baseForThis = DEFAULT_BASE;
+    if(correct){
+      // position is index in correctsSorted (0-based)
+      const pos = correctsSorted.findIndex(s=>s.playerId===me.id && s.ts===arr.find(x=>x.playerId===me.id && x.ts===s.ts)?.ts);
+      // If pos is -1 because identical ts values or duplicates, fallback to count of previous corrects before this ts
+      let positionIndex = pos;
+      if(positionIndex === -1){
+        // count how many corrects have ts < this submission ts
+        const myTs = arr.find(s=>s.playerId===me.id && s.ts===arr.find(x=>x.playerId===me.id && x.answer===raw)?.ts)?.ts || now();
+        positionIndex = arr.filter(s=>s.correct && s.ts < myTs).length;
+      }
+      if(positionIndex === 0) baseForThis = BASE_BY_ORDER[0];
+      else if(positionIndex === 1) baseForThis = BASE_BY_ORDER[1];
+      else if(positionIndex === 2) baseForThis = BASE_BY_ORDER[2];
+      else baseForThis = DEFAULT_BASE;
+    } else {
+      baseForThis = WRONG_SCORE;
+    }
+
+    // now update player's score & streak
+    updatePlayerScoreOnSubmission(me.id, correct, baseForThis);
+
+    // feedback to player
+    const playersNow = storageGet('riddle_game_players') || [];
+    const meNow = playersNow.find(p=>p.id===me.id);
+    document.getElementById('myScore').textContent = meNow.score;
+    document.getElementById('myStreak').textContent = meNow.streak;
+
+    feedback.innerHTML = correct ? `<div class="ok">Correct — awarded ${formatNumber(Math.round(baseForThis * (correct ? 1 : 1)))} points (base ${formatNumber(baseForThis)})</div>` : `<div class="bad">Wrong — you received ${formatNumber(WRONG_SCORE)} points and your streak reset.</div>`;
+    // lock submit, enable next
+    btnSubmit.disabled = true;
+    answerInput.disabled = true;
+    btnNext.disabled = false;
+  });
+
+  btnNext.addEventListener('click', ()=> {
+    // advance session index for this player
+    const sessionKey = 'riddle_game_session_' + me.id;
+    let session = JSON.parse(sessionStorage.getItem(sessionKey) || '{}');
+    session.currentIndex = (session.currentIndex || 0) + 1;
+    sessionStorage.setItem(sessionKey, JSON.stringify(session));
+    // if last item reached, mark finished
+    if(session.currentIndex >= ITEMS.length){
+      markPlayerFinished(me.id);
+      showPlayerFinished(Object.assign({}, me, storageGet('riddle_game_players').find(p=>p.id===me.id)));
+    } else {
+      renderItemForPlayer(me.id, session.currentIndex);
+    }
+  });
+}
+
+function showPlayerFinished(playerObj){
+  const players = storageGet('riddle_game_players') || [];
+  const me = players.find(p=>p.id===playerObj.id) || playerObj;
+  mainArea.innerHTML = '';
+  const card = document.createElement('div');
+  card.className = 'card center';
+  card.innerHTML = `
+    <h2>Finished — Thank you!</h2>
+    <p class="small">Player: <strong>${escapeHtml(me.name)}</strong> — Castle: <strong>${escapeHtml(me.castle)}</strong></p>
+    <p>Your final score: <strong>${me.score}</strong></p>
+    <p class="muted">You may not retake the game in this browser.</p>
+    <div style="margin-top:12px;"><button id="btnBackHome" class="ghost">Back to Home</button></div>
+  `;
+  mainArea.appendChild(card);
+  document.getElementById('btnBackHome').addEventListener('click', ()=> { showInstructions(); });
+}
+
+function showAdminDashboard(){
+  mainArea.innerHTML = '';
+  const card = document.createElement('div');
+  card.className='card';
+  card.innerHTML = `<h2>Admin Dashboard — All Players</h2>
+    <div id="adminControls" class="row">
+      <button id="btnRefresh" class="secondary">Refresh</button>
+      <button id="btnExport" class="ghost">Export CSV</button>
+      <button id="btnClearFinished" class="ghost">Clear Finished Flag</button>
+    </div>
+    <div id="adminContent" style="margin-top:12px;"></div>
+  `;
+  mainArea.appendChild(card);
+
+  document.getElementById('btnRefresh').addEventListener('click', ()=> renderAdminContent());
+  document.getElementById('btnExport').addEventListener('click', ()=> exportCSV());
+  document.getElementById('btnClearFinished').addEventListener('click', ()=> {
+    if(!confirm('This will mark all players as not finished (they can replay). Continue?')) return;
+    const ps = storageGet('riddle_game_players') || [];
+    ps.forEach(p=>{ p.finished = false; p.finishedAt=null; p.score = p.score || 0; });
+    storageSet('riddle_game_players', ps);
+    renderAdminContent();
+  });
+
+  renderAdminContent();
+}
+
+function renderAdminContent(){
+  const adminContent = document.getElementById('adminContent');
+  const players = storageGet('riddle_game_players') || [];
+  const submissions = storageGet('riddle_game_submissions') || {};
+  adminContent.innerHTML = `
+    <div class="muted small">Total players: ${players.length}</div>
+    <table class="leaderboard" id="lb">
+      <thead><tr><th>Player</th><th>Castle</th><th>Score</th><th>Streak</th><th>Finished</th><th>Started</th><th>FinishedAt</th></tr></thead>
+      <tbody>${players.map(p=>`<tr><td>${escapeHtml(p.name)}</td><td>${escapeHtml(p.castle)}</td><td>${p.score}</td><td>${p.streak}</td><td>${p.finished ? 'Yes' : 'No'}</td><td>${p.startedAt ? new Date(p.startedAt).toLocaleString() : ''}</td><td>${p.finishedAt ? new Date(p.finishedAt).toLocaleString() : ''}</td></tr>`).join('')}</tbody>
+    </table>
+    <h4 style="margin-top:12px;">Per-item submissions (latest first)</h4>
+    <div id="submissionsArea"></div>
+  `;
+  const subArea = document.getElementById('submissionsArea');
+  const keys = Object.keys(submissions).sort((a,b)=>Number(a)-Number(b));
+  if(keys.length===0) subArea.innerHTML = '<div class="muted">No submissions yet</div>';
+  else {
+    subArea.innerHTML = keys.map(k=>{
+      const arr = submissions[k].slice().sort((a,b)=>b.ts - a.ts);
+      return `<div style="margin-bottom:10px;"><strong>Item ${Number(k)+1}</strong><div class="small">${ITEMS[k].prompt}</div><table class="leaderboard"><thead><tr><th>Player</th><th>Castle</th><th>Answer</th><th>Correct</th><th>Time</th></tr></thead><tbody>${arr.map(s=>{
+        const p = (storageGet('riddle_game_players')||[]).find(x=>x.id===s.playerId) || {};
+        return `<tr><td>${escapeHtml(p.name||s.playerId)}</td><td>${escapeHtml(p.castle||'')}</td><td>${escapeHtml(s.answer)}</td><td>${s.correct ? 'Yes' : 'No'}</td><td>${new Date(s.ts).toLocaleString()}</td></tr>`;
+      }).join('')}</tbody></table></div>`;
+    }).join('');
+  }
+}
+
+// ----- Submission & scoring logic -----
+
+// Record a submission for itemIndex
+function recordSubmission(itemIndex, submission){
+  const submissions = storageGet('riddle_game_submissions') || {};
+  submissions[itemIndex] = submissions[itemIndex] || [];
+  // push submission (note: there may be duplicate entries if same player submits multiple times; we accept this as the locked answer)
+  submissions[itemIndex].push(submission);
+  storageSet('riddle_game_submissions', submissions);
+}
+
+// Update player's score based on this submission (applies streak multipliers)
+function updatePlayerScoreOnSubmission(playerId, correct, base){
+  const players = storageGet('riddle_game_players') || [];
+  const pIndex = players.findIndex(p=>p.id===playerId);
+  if(pIndex === -1) return;
+  const player = players[pIndex];
+
+  if(correct){
+    // increment streak then compute multiplier
+    player.streak = (player.streak || 0) + 1;
+    // For multiplier function we designed: if previously 0 => this is first in streak -> multiplier=1.5
+    // Our streakMultiplier() expects previous streak count; to match the intended mapping:
+    // We implemented streakMultiplier so that:
+    // - if !streak or <=0 => returns 1.5 (first correct)
+    // - if 1 => returns 2 (second), 2=>3 (third), 3=>4 (fourth), >=4 =>5
+    const prevStreak = player.streak - 1; // previous count before this correct
+    const mult = streakMultiplier(prevStreak);
+    const awarded = Math.round(base * mult);
+    player.score = (player.score || 0) + awarded;
+  } else {
+    // wrong answer: award WRONG_SCORE and reset streak
+    player.streak = 0;
+    player.score = (player.score || 0) + WRONG_SCORE;
+  }
+  players[pIndex] = player;
+  storageSet('riddle_game_players', players);
+}
+
+// Mark a player finished
+function markPlayerFinished(playerId){
+  const players = storageGet('riddle_game_players') || [];
+  const pIndex = players.findIndex(p=>p.id===playerId);
+  if(pIndex === -1) return;
+  players[pIndex].finished = true;
+  players[pIndex].finishedAt = now();
+  storageSet('riddle_game_players', players);
+}
+
+// ----- Utilities for export / display -----
+function exportCSV(){
+  const players = storageGet('riddle_game_players') || [];
+  if(players.length===0){ alert('No players to export'); return; }
+  const rows = [['Name','Castle','Score','Streak','Finished','StartedAt','FinishedAt']];
+  players.forEach(p=>{
+    rows.push([p.name,p.castle,p.score,p.streak,p.finished, p.startedAt ? new Date(p.startedAt).toISOString() : '', p.finishedAt ? new Date(p.finishedAt).toISOString() : '']);
+  });
+  const csv = rows.map(r => r.map(cell => `"${String(cell||'').replace(/"/g,'""')}"`).join(',')).join('\\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'riddle_game_players.csv'; document.body.appendChild(a); a.click(); a.remove();
+  URL.revokeObjectURL(url);
+}
+
+function formatNumber(n){ return n.toLocaleString(); }
+function escapeHtml(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function normalizeAnswer(s){ return String(s||'').toLowerCase().replace(/[.,!?\\-\\s]+/g,' ').trim(); }
+
+// ----- On-load: show instructions -----
+showInstructions();
+
+// auto-refresh admin dashboard content every 2 seconds to show live updates (if admin has it open)
+let adminInterval = null;
+document.addEventListener('click', function(e){
+  if(e.target && e.target.id === 'btnAdmin'){
+    if(adminInterval) clearInterval(adminInterval);
+    adminInterval = setInterval(()=>{ // only refresh if admin page open
+      const adminContent = document.getElementById('adminContent');
+      if(adminContent) renderAdminContent();
+    }, 2000);
+  }
+});
+
+// Note: The scoring logic for "first/second/third" base is determined at moment of submission using the
+// existing list of submissions for that item in localStorage. That means: whoever submits earlier on the same browser gets the earlier position.
+// For a multi-device real-time implementation you'd need a server; this local version works for single-browser admin & players.
+//
+// End of script
+</script>
+</body>
+</html>
